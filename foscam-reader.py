@@ -113,17 +113,23 @@ class Foscam(object):
 
 #class SimpleMultipartReaderResponse(object):
 
-class SimpleMultipartReader(object):
+class MultipartReader(object):
     def __init__(self, response):
+        content_type = response.headers.get('Content-Type', '')
+        prefix = 'multipart/x-mixed-replace;boundary='
+        if not content_type.startswith(prefix):
+            raise ValueError(f'Wrong Content-Type: {content_type}')
         self.response = response
+        self.boundary = content_type[len(prefix):]
         self.chunk = b''
         self.cursor = 0
 
     def available(self):
         return len(self.chunk) - self.cursor
 
-    def find_delimiter(self, delimiter):
-        return self.chunk.find(delimiter, self.cursor) - self.cursor
+    def find_delimiter(self, delimiter, search_from=0):
+        search_from += self.cursor
+        return self.chunk.find(delimiter, search_from) - self.cursor
 
     def _append_next_chunk(self, chunk_size=None):
         # Want just the next chunk for now. May later want to iterate over many.
@@ -152,11 +158,14 @@ class SimpleMultipartReader(object):
         return False
 
     def next_line(self, chunk_size=1024, decode_unicode=False, max_valid_length=1024):
+        search_from = 0
         while True:
-            index = self.find_delimiter(b'\r\n')
+            index = self.find_delimiter(b'\r\n', search_from=search_from)
             if index >= 0:
                 # Found it.
                 break
+            # Resume searching where we left off, rather than at the beginning.
+            search_from = max(0, self.available() - 2)
             if self.available() >= max_valid_length:
                 raise ValueError(
                     f'There is no line terminator in the next {self.available()} bytes')
@@ -170,65 +179,59 @@ class SimpleMultipartReader(object):
             raise ValueError(
                 f'The next line terminator is too far away ({index} > {max_valid_length})')
 
-        line_bytes = self.chunk[self.cursor:self.cursor+index]
+        line = self.chunk[self.cursor:self.cursor+index]
         self.cursor += index + 2
 
         if decode_unicode:
-            return codecs.decode(line_bytes, encoding=self.response.encoding, errors='replace')
-        return line_bytes
-
-    def _find_delimiter(self, delimiter):
-        return self.chunk.find(delimiter, self.cursor)
-        if index < 0:
-            # Not found.
-            return False
-
-
-        if index - self.cursor > max_valid_length:
-            raise ValueError(
-                f'There is no line terminator in the next {max_valid_length} characters')
-
-
-
-        index = self.chunk.find('\r\n', self.cursor)
-        if index < 0:
-            # Not found.
-            return False
-
-        if index - self.cursor > max_valid_length:
-            raise ValueError(
-                f'There is no line terminator in the next {max_valid_length} characters')
-
-
-
-
-
+            line = codecs.decode(line, encoding=self.response.encoding, errors='replace')
+        print(f'next_line -> {line!r}')
+        return line
 
     def read_next_part(self, chunk_size=1024):
-        headers = {}
-        body = ''
+        headers = requests.structures.CaseInsensitiveDict()
+        body = b''
 
+        # First read the boundary.
+        boundary = self.next_line()
+        assert boundary == self.boundary
+
+        # Now read non-blank lines as HTTP headers.
+        for line in self.next_line():
+            if not line:
+                break
+
+            # Not handling multi-line header values (i.e. where the
+            # value continues on to the next line).
+            name, value = line.split(sep=':', maxsplit=1)
+            name = name.strip()
+            value = value.strip()
+            headers[name] = value
+
+
+        print('Located these part headers:')
+        print(headers)
         # Start by reading lines terminated by \r\n.
 
 
+        return headers, body
 
 
-        while self._append_next_chunk(chunk_size=chunk_size):
+        # while self._append_next_chunk(chunk_size=chunk_size):
 
 
 
-        in
+        # in
 
-        while True:
-            chunk = None
-            if self.previous_chunk:
-                chunk = self.previous_chunk
-                self.previous_chunk = None
-            else:
-                # Want just the next chunk
-                for chunk in self.response.iter_content():
-                    break
-            if 
+        # while True:
+        #     chunk = None
+        #     if self.previous_chunk:
+        #         chunk = self.previous_chunk
+        #         self.previous_chunk = None
+        #     else:
+        #         # Want just the next chunk
+        #         for chunk in self.response.iter_content():
+        #             break
+        #     if 
 
 
 
@@ -280,8 +283,10 @@ if __name__ == '__main__':
         basic_auth=args.basic_auth)
 
     response = foscam.open_videostream()
+    mpr = MultipartReader(response)
+    mpr.read_next_part()
 
-    for line in response.iter_lines(chunk_size=64):
-        print(f'{line!r}')
+    # for line in response.iter_lines(chunk_size=64):
+    #     print(f'{line!r}')
 
 
