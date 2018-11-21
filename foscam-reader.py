@@ -4,6 +4,7 @@
 # for documentation on the different endpoints.
 
 import argparse
+import codecs
 import math
 import os
 import requests
@@ -115,30 +116,88 @@ class Foscam(object):
 class SimpleMultipartReader(object):
     def __init__(self, response):
         self.response = response
-        self.chunk = ''
+        self.chunk = b''
         self.cursor = 0
 
+    def available(self):
+        return len(self.chunk) - self.cursor
+
+    def find_delimiter(self, delimiter):
+        return self.chunk.find(delimiter, self.cursor) - self.cursor
+
     def _append_next_chunk(self, chunk_size=None):
-        # Want just the next chunk
-        for new_chunk in self.response.iter_content(chunk_size=chunk_size):
-            if self.chunk and self.cursor < len(self.chunk):
-                self.chunk += new_chunk
+        # Want just the next chunk for now. May later want to iterate over many.
+        loops = 0
+        for new_chunk in self.response.iter_content(chunk_size=chunk_size, decode_unicode=False):
+            # new_chunk is a sequence of bytes.
+            if len(new_chunk) == 0:
+                # DANGER of looping indefinitely!
+                loops += 1
+                if loops > 10:
+                    raise ValueError('Too many empty new_chunks!')
+                continue
+            # If less is available in chunk than is already consumed
+            # AND is to be appended, then don't keep appending to self.chunk.
+            if self.chunk:
+                if self.cursor > (self.available() + len(new_chunk)):
+                    self.chunk = self.chunk[self.cursor:] + new_chunk
+                    self.cursor = 0
+                else:
+                    self.chunk += new_chunk
             else:
                 self.chunk = new_chunk
                 self.cursor = 0
             return True
+        # Unable to get another chunk from the underlying response stream.
         return False
 
-    def _available(self):
-        return len(self.chunk) - self.cursor
+    def next_line(self, chunk_size=1024, decode_unicode=False, max_valid_length=1024):
+        while True:
+            index = self.find_delimiter(b'\r\n')
+            if index >= 0:
+                # Found it.
+                break
+            if self.available() >= max_valid_length:
+                raise ValueError(
+                    f'There is no line terminator in the next {self.available()} bytes')
+            # Need more data.
+            if not self._append_next_chunk(chunk_size=chunk_size):
+                # Unable to get more!
+                raise ValueError(
+                    'There is no line terminator before the end of the stream')
 
-    def _extract_line(self, max_valid_length=1024):
-        index = self.chunk.find('\r\n', self.cursor)
-        if 
+        if index > max_valid_length:
+            raise ValueError(
+                f'The next line terminator is too far away ({index} > {max_valid_length})')
+
+        line_bytes = self.chunk[self.cursor:self.cursor+index]
+        self.cursor += index + 2
+
+        if decode_unicode:
+            return codecs.decode(line_bytes, encoding=self.response.encoding, errors='replace')
+        return line_bytes
+
+    def _find_delimiter(self, delimiter):
+        return self.chunk.find(delimiter, self.cursor)
+        if index < 0:
+            # Not found.
+            return False
+
+
         if index - self.cursor > max_valid_length:
             raise ValueError(
                 f'There is no line terminator in the next {max_valid_length} characters')
 
+
+
+        index = self.chunk.find('\r\n', self.cursor)
+        if index < 0:
+            # Not found.
+            return False
+
+        if index - self.cursor > max_valid_length:
+            raise ValueError(
+                f'There is no line terminator in the next {max_valid_length} characters')
 
 
 
