@@ -91,7 +91,7 @@ class Foscam(object):
         print()
         print(f'Got {url}; response headers=')
         print(response.headers)
-
+        return response
 
     def get_snapshot(self):
         response = self.get_endpoint('/snapshot.cgi')
@@ -108,6 +108,77 @@ class Foscam(object):
         )
         response = self.get_endpoint('/videostream.cgi', params=params, stream=True)
         return response
+
+
+#class SimpleMultipartReaderResponse(object):
+
+class SimpleMultipartReader(object):
+    def __init__(self, response):
+        self.response = response
+        self.chunk = ''
+        self.cursor = 0
+
+    def _append_next_chunk(self, chunk_size=None):
+        # Want just the next chunk
+        for new_chunk in self.response.iter_content(chunk_size=chunk_size):
+            if self.chunk and self.cursor < len(self.chunk):
+                self.chunk += new_chunk
+            else:
+                self.chunk = new_chunk
+                self.cursor = 0
+            return True
+        return False
+
+    def _available(self):
+        return len(self.chunk) - self.cursor
+
+    def _extract_line(self, max_valid_length=1024):
+        index = self.chunk.find('\r\n', self.cursor)
+        if 
+        if index - self.cursor > max_valid_length:
+            raise ValueError(
+                f'There is no line terminator in the next {max_valid_length} characters')
+
+
+
+
+
+
+
+    def read_next_part(self, chunk_size=1024):
+        headers = {}
+        body = ''
+
+        # Start by reading lines terminated by \r\n.
+
+
+
+
+        while self._append_next_chunk(chunk_size=chunk_size):
+
+
+
+        in
+
+        while True:
+            chunk = None
+            if self.previous_chunk:
+                chunk = self.previous_chunk
+                self.previous_chunk = None
+            else:
+                # Want just the next chunk
+                for chunk in self.response.iter_content():
+                    break
+            if 
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == '__main__':
@@ -152,5 +223,6 @@ if __name__ == '__main__':
     response = foscam.open_videostream()
 
     for line in response.iter_lines(chunk_size=64):
-        
+        print(f'{line!r}')
+
 
