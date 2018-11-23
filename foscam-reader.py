@@ -111,8 +111,6 @@ class Foscam(object):
         return response
 
 
-#class SimpleMultipartReaderResponse(object):
-
 class MultipartReader(object):
     def __init__(self, response):
         content_type = response.headers.get('Content-Type', '')
@@ -120,7 +118,9 @@ class MultipartReader(object):
         if not content_type.startswith(prefix):
             raise ValueError(f'Wrong Content-Type: {content_type}')
         self.response = response
-        self.boundary = content_type[len(prefix):]
+        self.boundary_text = '--' + content_type[len(prefix):]
+        self.next_boundary_bytes = codecs.encode(
+            '\r\n--' + content_type[len(prefix):], encoding='ascii')
         self.chunk = b''
         self.cursor = 0
 
@@ -131,7 +131,7 @@ class MultipartReader(object):
         search_from += self.cursor
         return self.chunk.find(delimiter, search_from) - self.cursor
 
-    def _append_next_chunk(self, chunk_size=None):
+    def _append_next_chunk(self, chunk_size=1024):
         # Want just the next chunk for now. May later want to iterate over many.
         loops = 0
         for new_chunk in self.response.iter_content(chunk_size=chunk_size, decode_unicode=False):
@@ -157,7 +157,34 @@ class MultipartReader(object):
         # Unable to get another chunk from the underlying response stream.
         return False
 
-    def next_line(self, chunk_size=1024, decode_unicode=False, max_valid_length=1024):
+    def _append_until(self, stop_cb, chunk_size=1024):
+        empty_loops = 0
+        for new_chunk in self.response.iter_content(chunk_size=chunk_size, decode_unicode=False):
+            # new_chunk is a sequence of bytes.
+            if len(new_chunk) == 0:
+                # DANGER of looping indefinitely!
+                empty_loops += 1
+                if empty_loops > 10:
+                    ValueError('Read too many empty chunks in a row!')
+                continue
+            empty_loops = 0
+            if self.available() > 0:
+                # If less is available in chunk than is already consumed
+                # AND is to be appended, then don't keep appending to self.chunk.
+                if self.cursor > (self.available() + len(new_chunk)):
+                    self.chunk = self.chunk[self.cursor:] + new_chunk
+                    self.cursor = 0
+                else:
+                    self.chunk += new_chunk
+            else:
+                self.chunk = new_chunk
+                self.cursor = 0
+            if stop_cb():
+                return True
+        # Unable to get another chunk from the underlying response stream.
+        return False
+
+    def next_line(self, chunk_size=1024, encoding='ascii', errors='replace', max_valid_length=1024):
         search_from = 0
         while True:
             index = self.find_delimiter(b'\r\n', search_from=search_from)
@@ -180,10 +207,11 @@ class MultipartReader(object):
                 f'The next line terminator is too far away ({index} > {max_valid_length})')
 
         line = self.chunk[self.cursor:self.cursor+index]
+        print(f'raw line {line!r}')
         self.cursor += index + 2
 
-        if decode_unicode:
-            line = codecs.decode(line, encoding=self.response.encoding, errors='replace')
+        if encoding:
+            line = codecs.decode(line, encoding=encoding, errors='replace')
         print(f'next_line -> {line!r}')
         return line
 
@@ -191,18 +219,23 @@ class MultipartReader(object):
         headers = requests.structures.CaseInsensitiveDict()
         body = b''
 
-        # First read the boundary.
-        boundary = self.next_line()
-        assert boundary == self.boundary
+        # Read the boundary, skipping over blank lines first.
+        while True:
+            line = self.next_line()
+            if line:
+                break
+        assert line == self.boundary_text, f'{line} != {self.boundary_text}'
 
         # Now read non-blank lines as HTTP headers.
-        for line in self.next_line():
+        while True:
+            line = self.next_line()
             if not line:
                 break
 
             # Not handling multi-line header values (i.e. where the
             # value continues on to the next line).
-            name, value = line.split(sep=':', maxsplit=1)
+            print(f'line to split {line!r}')
+            name, value = line.split(':', maxsplit=1)
             name = name.strip()
             value = value.strip()
             headers[name] = value
@@ -210,8 +243,26 @@ class MultipartReader(object):
 
         print('Located these part headers:')
         print(headers)
-        # Start by reading lines terminated by \r\n.
 
+        if 'Content-Length' in headers:
+            content_length = int(headers['Content-Length'])
+            if content_length > (10 * 1024 * 1024):
+                raise ValueError(f'Content-Length ({content_length}) is too large')
+            need = content_length + len(self.next_boundary_bytes)
+            if not self._append_until(lambda: self.available() >= content_length):
+                raise ValueError(
+                    f'Unable to read body of Content-Length {content_length}')
+            next_boundary = self.find_delimiter(self.next_boundary_bytes)
+            if next_boundary < 0:
+                # Not found (yet), so not a problem to return content_length bytes.
+                pass
+            elif next_boundary < content_length:
+                # Not enough content!
+                raise ValueError(f'Only found {next_boundary} bytes, expected {content_length - next_boundary} more bytes.')
+            body = self.chunk[self.cursor:self.cursor+content_length]
+            self.cursor += content_length
+        else:
+            raise Exception('Not Yet Implemented')
 
         return headers, body
 
@@ -284,7 +335,8 @@ if __name__ == '__main__':
 
     response = foscam.open_videostream()
     mpr = MultipartReader(response)
-    mpr.read_next_part()
+    while True:
+        headers, body = mpr.read_next_part()
 
     # for line in response.iter_lines(chunk_size=64):
     #     print(f'{line!r}')
