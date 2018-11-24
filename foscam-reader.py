@@ -5,9 +5,12 @@
 
 import argparse
 import codecs
+import logging
 import math
 import os
 import requests
+
+import stack
 
 
 def videostream_fps_to_code(fps):
@@ -84,14 +87,13 @@ class Foscam(object):
             else:
                 url = url + '/' + endpoint
 
-        print(f'Getting {url}')
+        logging.debug(f'Getting {url}')
         response = requests.get(url, params=params, headers=headers, **kwargs)
-        print(f'Requested {response.request.url}')
-        print('REQUEST headers=')
-        print(response.request.headers)
-        print()
-        print(f'Got {url}; response headers=')
-        print(response.headers)
+        logging.debug(f'Requested {response.request.url}')
+        logging.debug('REQUEST headers=')
+        logging.debug(response.request.headers)
+        logging.debug(f'Got {url}; response headers=')
+        logging.debug(response.headers)
         return response
 
     def get_snapshot(self):
@@ -102,13 +104,22 @@ class Foscam(object):
         """Read jpeg stream from videostream.cgi."""
         fps, code = videostream_fps_to_code(frames_per_second)
         if not math.isclose(fps, frames_per_second):
+            logging.debug(f'Requesting {fps} f/s, instead of {frames_per_second} f/s')
             print(f'Requesting {fps} f/s, instead of {frames_per_second} f/s')
         params = dict(
             rate=code,
             resolution=(32 if hi_res else 8)
         )
-        response = self.get_endpoint('/videostream.cgi', params=params, stream=True)
-        return response
+        # Suppress a warning level message from urllib3 about unimportant issues
+        # with parsing the headers. See: https://github.com/urllib3/urllib3/issues/800
+        urllib3_logger = logging.getLogger("urllib3")
+        old_level = urllib3_logger.getEffectiveLevel()
+        urllib3_logger.setLevel(logging.CRITICAL)
+        try:
+            response = self.get_endpoint('/videostream.cgi', params=params, stream=True)
+            return response
+        finally:
+            urllib3_logger.setLevel(old_level)
 
 
 class MultipartReader(object):
@@ -207,12 +218,12 @@ class MultipartReader(object):
                 f'The next line terminator is too far away ({index} > {max_valid_length})')
 
         line = self.chunk[self.cursor:self.cursor+index]
-        print(f'raw line {line!r}')
+        logging.debug(f'raw line {line!r}')
         self.cursor += index + 2
 
         if encoding:
             line = codecs.decode(line, encoding=encoding, errors='replace')
-        print(f'next_line -> {line!r}')
+        logging.debug(f'next_line -> {line!r}')
         return line
 
     def read_next_part(self, chunk_size=1024):
@@ -234,15 +245,15 @@ class MultipartReader(object):
 
             # Not handling multi-line header values (i.e. where the
             # value continues on to the next line).
-            print(f'line to split {line!r}')
+            logging.debug(f'line to split {line!r}')
             name, value = line.split(':', maxsplit=1)
             name = name.strip()
             value = value.strip()
             headers[name] = value
 
 
-        print('Located these part headers:')
-        print(headers)
+        logging.debug('Located these part headers:')
+        logging.debug(headers)
 
         if 'Content-Length' in headers:
             content_length = int(headers['Content-Length'])
@@ -259,61 +270,41 @@ class MultipartReader(object):
             elif next_boundary < content_length:
                 # Not enough content!
                 raise ValueError(f'Only found {next_boundary} bytes, expected {content_length - next_boundary} more bytes.')
-            body = self.chunk[self.cursor:self.cursor+content_length]
+            body = bytes(self.chunk[self.cursor:self.cursor+content_length])
             self.cursor += content_length
         else:
             raise Exception('Not Yet Implemented')
 
         return headers, body
 
-
-        # while self._append_next_chunk(chunk_size=chunk_size):
-
-
-
-        # in
-
-        # while True:
-        #     chunk = None
-        #     if self.previous_chunk:
-        #         chunk = self.previous_chunk
-        #         self.previous_chunk = None
-        #     else:
-        #         # Want just the next chunk
-        #         for chunk in self.response.iter_content():
-        #             break
-        #     if 
-
-
-
-
-
-
-
-
-
-
-
 if __name__ == '__main__':
     default_host=os.environ.get('FOSCAM_HOST', '')
-    # print(f'default_host={default_host}')
-    # print(f'os.environ={os.environ}')
+    default_user=os.environ.get('FOSCAM_USER', '')
 
     parser = argparse.ArgumentParser(
         description='Test access to Foscam.')
     parser.add_argument(
         '--host', required=(not default_host),
         default=default_host,
-        help="Internet host name of the Foscam IP Camera. Defaults to $FOCSCAM_HOST")
+        help=('Internet host name of the Foscam IP Camera. ' +
+              f'Defaults to $FOCSCAM_HOST ("{default_host}").'))
     parser.add_argument('--basic_auth',
         default=os.environ.get('FOSCAM_BASIC_AUTH', ''),
              help='Basic Auth token.')
     parser.add_argument('--user',
         default=os.environ.get('FOSCAM_USER', ''),
-             help='Foscam user name.')
+             help=('Foscam user name. ' +
+                   f'Defaults to $FOSCAM_USER ("{default_user}").'))
     parser.add_argument('--password',
         default=os.environ.get('FOSCAM_PASSWORD', ''),
              help='Foscam password.')
+    parser.add_argument('--fps',
+        default=5.0,
+        type=float,
+             help='Frames per second.')
+    parser.add_argument('--save_dir',
+        default='',
+        help='Directory into which to save the parts. If not set, then not saved.')
     args = parser.parse_args()
 
     def arg_error(msg):
@@ -333,12 +324,13 @@ if __name__ == '__main__':
         password=args.password,
         basic_auth=args.basic_auth)
 
-    response = foscam.open_videostream()
+    response = foscam.open_videostream(frames_per_second=args.fps)
     mpr = MultipartReader(response)
-    while True:
+    for n in range(100):
         headers, body = mpr.read_next_part()
-
-    # for line in response.iter_lines(chunk_size=64):
-    #     print(f'{line!r}')
-
-
+        print('headers:', headers)
+        if args.save_dir:
+            fn = os.path.join(args.save_dir, f'foscam_{n:04d}.jpg')
+            print('      =>', fn)
+            with open(fn, 'wb') as f:
+                f.write(body)
