@@ -10,6 +10,7 @@ import numpy as np
 import os
 from PIL import Image
 import sys
+from skimage import exposure
 
 
 class NotEqualException(Exception):
@@ -88,6 +89,12 @@ class ImageStacker(object):
 
         return byte_image
 
+    def equalize_adapthist(self, kernel_size=None, clip_limit=0.01, nbins=256):
+        image = exposure.equalize_adapthist(
+            self.stacked_image, kernel_size=kernel_size, clip_limit=clip_limit, nbins=nbins)
+        byte_image = image / (np.amax(image) / 255.0)
+        return byte_image
+
 
 def main():
     dir = '/tmp/foscam_pictures'
@@ -104,7 +111,7 @@ def main():
         while stacker.num_images() > target_size:
             stacker.remove_oldest()
 
-        byte_image = stacker.get_byte_image()
+        byte_image = stacker.equalize_adapthist(nbins=1024)
 
         # print('byte_image histogram')
         # print(np.histogram(byte_image, bins=256))
