@@ -237,6 +237,7 @@ class MultipartReader(object):
                 break
         assert line == self.boundary_text, f'{line} != {self.boundary_text}'
 
+        # TODO Record time of processing first bytes of part.
         # Now read non-blank lines as HTTP headers.
         while True:
             line = self.next_line()
