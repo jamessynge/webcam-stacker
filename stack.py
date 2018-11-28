@@ -45,6 +45,20 @@ def jpeg_bytes_to_ndarray(jpeg_bytes):
     return image
 
 
+def ndarray_to_pil_image(array, lower_to_func=np.amin, scale_func=lambda a: 255.999 / np.amax(a)):
+    if lower_to_func:
+        lower_to = lower_to_func(array)
+        array = array - lower_to
+
+    if scale_func:
+        scale = scale_func(array)
+        array = array * scale
+
+    byte_array = array.astype('uint8')
+    byte_image = Image.fromarray(byte_array)
+    return byte_image
+
+
 class ImageStacker(object):
     """docstring for ImageStacker"""
 
@@ -79,6 +93,7 @@ class ImageStacker(object):
         return unit_image
 
     def get_byte_image(self):
+        """Return an image with channel values in the range [0, 255]."""
         # print('stacked_image histogram')
         # print(np.histogram(self.stacked_image, bins=256))
 
@@ -89,7 +104,7 @@ class ImageStacker(object):
         # print('zero_image histogram')
         # print(np.histogram(zero_image, bins=256))
 
-        # Now divide by the maximum value / 255, bringing the max value to 255.
+        # Now divide by the maximum value / 255.5, bringing the max value to 255.5.
         zero_image = zero_image.astype('double')
         byte_image = zero_image / (np.amax(zero_image) / 255.0)
 
@@ -152,8 +167,8 @@ def process_images(image_paths, output_pattern, min_depth, depth):
         g = unit_image[:,:,1]
         b = unit_image[:,:,2]
 
-        # print('unit_image r histogram')
-        # print(np.histogram(r, bins=256))
+        print('unit_image r histogram')
+        print(np.histogram(r, bins=256))
 
         # print('unit_image g histogram')
         # print(np.histogram(g, bins=256))
@@ -196,6 +211,8 @@ def process_images(image_paths, output_pattern, min_depth, depth):
         np.multiply(b, e_all, out=b)
 
 
+        print('adjusted unit_image r histogram')
+        print(np.histogram(r, bins=256))
 
         # print('final unit r histogram')
         # print(np.histogram(r, bins=256))
@@ -205,6 +222,9 @@ def process_images(image_paths, output_pattern, min_depth, depth):
 
         # print('final unit b histogram')
         # print(np.histogram(b, bins=256))
+
+        image = ndarray_to_pil_image(unit_image)
+
 
         amax = np.amax(unit_image)
         # if amax != 0:
